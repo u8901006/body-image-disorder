@@ -1,0 +1,83 @@
+name: Body Image Research Daily Report
+
+on:
+  schedule:
+    - cron: "20 0 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Target date (YYYY-MM-DD), leave empty for today"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.4
+        with:
+          node-version: "24"
+
+      - name: Determine date
+        id: date
+        run: |
+          INPUT_DATE="${{ github.event.inputs.date }}"
+          if [ -n "$INPUT_DATE" ]; then
+            if echo "$INPUT_DATE" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+              echo "target=$INPUT_DATE" >> "$GITHUB_OUTPUT"
+            else
+              TARGET=$(TZ=Asia/Taipei date +%Y-%m-%d)
+              echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            TARGET=$(TZ=Asia/Taipei date +%Y-%m-%d)
+            echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch papers
+        run: node scripts/fetch_papers.mjs 7 50 .
+        continue-on-error: true
+
+      - name: Check papers data
+        id: papers
+        run: |
+          if [ -f papers.json ] && grep -q '"count"' papers.json; then
+            COUNT=$(node -e "const d=JSON.parse(require('fs').readFileSync('papers.json','utf8')); console.log(d.count)")
+            echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo '{"date":"...","count":0,"papers":[]}' > papers.json
+          fi
+
+      - name: Generate report with AI
+        if: steps.papers.outputs.count != '0'
+        env:
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          ZHIPU_API_BASE: ${{ vars.ZHIPU_API_BASE }}
+        run: |
+          node scripts/generate_report.mjs \
+            --input papers.json \
+            --output "docs/body-image-${{ steps.date.outputs.target }}.html"
+
+      - name: Generate index page
+        run: node scripts/generate_index.mjs
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/ data/
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "body image daily report: ${{ steps.date.outputs.target }}"
+          git pull --rebase origin main
+          git push

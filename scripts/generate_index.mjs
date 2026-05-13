@@ -1,0 +1,129 @@
+import { readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+const DOCS_DIR = 'docs';
+
+function formatDateZh(dateStr) {
+  try {
+    const d = new Date(dateStr);
+    const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（週${weekdays[d.getDay()]}）`;
+  } catch {
+    return dateStr;
+  }
+}
+
+function getReportFiles() {
+  if (!existsSync(DOCS_DIR)) return [];
+
+  return readdirSync(DOCS_DIR)
+    .filter(f => f.startsWith('body-image-') && f.endsWith('.html'))
+    .map(f => {
+      const dateMatch = f.match(/body-image-(\d{4}-\d{2}-\d{2})\.html/);
+      return {
+        filename: f,
+        date: dateMatch ? dateMatch[1] : '',
+        dateZh: dateMatch ? formatDateZh(dateMatch[1]) : f
+      };
+    })
+    .filter(r => r.date)
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function generateIndexHTML(reports) {
+  const totalCount = reports.length;
+  const latestReport = reports[0];
+
+  const reportItems = reports.slice(0, 60).map((r, i) => `
+    <a class="report-item" href="${r.filename}" style="animation-delay:${0.05 + i * 0.03}s">
+      <div class="report-date">${escapeHtml(r.dateZh)}</div>
+      <div class="report-arrow">→</div>
+    </a>`).join('');
+
+  return `<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>身體意象研究文獻日報</title>
+<meta name="description" content="Body Image Disorders Research Daily Report - AI驅動的身體意象研究文獻每日精選">
+<meta property="og:title" content="身體意象研究文獻日報">
+<meta property="og:description" content="AI驅動的身體意象研究文獻每日精選，涵蓋身體意象困擾、BDD、飲食障礙等領域">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+<style>
+:root{--bg:#f6f1e8;--surface:#fffaf2;--line:#d8c5ab;--text:#2b2118;--muted:#766453;--accent:#8c4f2b;--accent-soft:#ead2bf}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Noto Sans TC','Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:radial-gradient(circle at top,#fff6ea 0,var(--bg) 55%,#ead8c6 100%);color:var(--text);line-height:1.8;min-height:100vh}
+.container{max-width:640px;margin:0 auto;padding:50px 20px}
+.header{text-align:center;margin-bottom:40px;animation:fadeUp .5s ease-out both}
+.header h1{font-size:2rem;color:var(--accent);font-weight:700;margin-bottom:6px}
+.header .subtitle{color:var(--muted);font-size:.95rem;margin-bottom:4px}
+.header .count{color:var(--muted);font-size:.88rem;margin-top:8px}
+.latest-link{display:block;text-align:center;margin-bottom:32px;animation:fadeUp .55s ease-out both}
+.latest-link a{display:inline-flex;align-items:center;gap:8px;padding:14px 32px;background:var(--accent);color:#fff;text-decoration:none;border-radius:999px;font-size:1.05rem;font-weight:600;transition:background .2s,transform .2s;box-shadow:0 4px 12px rgba(140,79,43,.2)}
+.latest-link a:hover{background:#a35f35;transform:translateY(-2px)}
+.report-list{animation:fadeUp .6s ease-out both}
+.report-list-title{font-size:1.1rem;color:var(--accent);font-weight:600;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.report-item{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;background:var(--surface);border:1px solid var(--line);border-radius:14px;margin-bottom:10px;text-decoration:none;color:var(--text);transition:transform .2s,box-shadow .2s,border-color .2s;animation:fadeUp .4s ease-out both}
+.report-item:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(140,79,43,.1);border-color:var(--accent)}
+.report-date{font-weight:500;font-size:.95rem}
+.report-arrow{color:var(--accent);font-weight:600;font-size:1.1rem;transition:transform .2s}
+.report-item:hover .report-arrow{transform:translateX(4px)}
+.footer-section{text-align:center;margin-top:40px;padding:28px 24px;border-top:1px solid var(--line)}
+.footer-section .footer-brand{font-size:1rem;color:var(--accent);font-weight:600;margin-bottom:16px}
+.footer-section .footer-links{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin-bottom:20px}
+.footer-section .footer-links a{display:inline-flex;align-items:center;gap:6px;padding:8px 20px;background:var(--accent-soft);color:var(--accent);text-decoration:none;border-radius:999px;font-size:.88rem;font-weight:500;transition:background .2s}
+.footer-section .footer-links a:hover{background:var(--accent);color:#fff}
+.footer-section .footer-copy{font-size:.8rem;color:var(--muted)}
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:600px){.container{padding:30px 12px}.header h1{font-size:1.6rem}.report-item{padding:12px 14px}}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>身體意象研究文獻日報</h1>
+    <div class="subtitle">Body Image Disorders Research Daily Report</div>
+    <div class="count">共 ${totalCount} 期日報</div>
+  </div>
+
+  ${latestReport ? `
+  <div class="latest-link">
+    <a href="${latestReport.filename}">📖 閱讀最新一期${latestReport.dateZh ? ' · ' + escapeHtml(latestReport.dateZh) : ''}</a>
+  </div>` : ''}
+
+  ${reports.length > 0 ? `
+  <div class="report-list">
+    <div class="report-list-title">📋 歷史日報</div>
+    ${reportItems}
+  </div>` : '<p style="text-align:center;color:var(--muted)">尚無報告</p>'}
+
+  <div class="footer-section">
+    <div class="footer-brand">李政洋身心診所</div>
+    <div class="footer-links">
+      <a href="https://www.leepsyclinic.com/" target="_blank" rel="noopener">🏥 診所首頁</a>
+      <a href="https://blog.leepsyclinic.com/" target="_blank" rel="noopener">📬 訂閱電子報</a>
+      <a href="https://buymeacoffee.com/CYlee" target="_blank" rel="noopener">☕ Buy me a coffee</a>
+    </div>
+    <div class="footer-copy">由 AI 自動生成 · GLM-5-Turbo 驅動</div>
+  </div>
+</div>
+</body>
+</html>`;
+}
+
+function escapeHtml(str) {
+  return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function main() {
+  const reports = getReportFiles();
+  console.log(`[Index] Found ${reports.length} reports`);
+
+  const html = generateIndexHTML(reports);
+  const outPath = join(DOCS_DIR, 'index.html');
+  writeFileSync(outPath, html);
+  console.log(`[Index] Written to ${outPath}`);
+}
+
+main();
