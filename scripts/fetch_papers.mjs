@@ -2,6 +2,7 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const PUBMED_ESEARCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi';
+const PUBMED_ESUMMARY = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi';
 const PUBMED_EFETCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi';
 const SEMANTIC_SCHOLAR = 'https://api.semanticscholar.org/graph/v1/paper/search';
 
@@ -90,136 +91,143 @@ async function searchPubMed(query, dateFrom, dateTo, maxResults = 100) {
   return ids;
 }
 
-async function fetchPubMedDetails(pmids) {
-  if (pmids.length === 0) return [];
+async function fetchPubMedSummary(pmids) {
+  if (pmids.length === 0) return {};
 
   const batchSize = 50;
-  const allPapers = [];
+  const allResults = {};
 
   for (let i = 0; i < pmids.length; i += batchSize) {
     const batch = pmids.slice(i, i + batchSize);
     const params = new URLSearchParams({
       db: 'pubmed',
       id: batch.join(','),
-      retmode: 'xml',
-      rettype: 'abstract'
+      retmode: 'json'
     });
 
-    console.log(`[PubMed] Fetching details batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(pmids.length / batchSize)}...`);
-    const res = await fetch(`${PUBMED_EFETCH}?${params}`, {
+    console.log(`[PubMed] Fetching summary batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(pmids.length / batchSize)}...`);
+    const res = await fetch(`${PUBMED_ESUMMARY}?${params}`, {
       signal: AbortSignal.timeout(60000)
     });
-    if (!res.ok) throw new Error(`PubMed efetch failed: ${res.status}`);
-    const xml = await res.text();
-    allPapers.push(...parsePubMedXml(xml));
+    if (!res.ok) throw new Error(`PubMed esummary failed: ${res.status}`);
+    const data = await res.json();
+    const result = data.result || {};
+
+    for (const uid of Object.keys(result)) {
+      if (uid === 'uids') continue;
+      const entry = result[uid];
+      if (entry && entry.title) {
+        allResults[uid] = entry;
+      }
+    }
 
     if (i + batchSize < pmids.length) {
       await new Promise(r => setTimeout(r, 400));
     }
   }
 
-  return allPapers;
+  return allResults;
 }
 
-function extractTag(xml, tag) {
-  const re = new RegExp(`<${tag}[^>]*?>([\\s\\S]*?)<\\/${tag}>`, 'i');
-  const match = xml.match(re);
-  return match ? match[1].replace(/<[^>]+>/g, '').trim() : '';
-}
+async function fetchPubMedAbstracts(pmids) {
+  if (pmids.length === 0) return {};
 
-function extractJournal(xml) {
-  const match = xml.match(/<Title>([\\s\\S]*?)<\/Title>/i);
-  return match ? match[1].trim() : '';
-}
+  const batchSize = 50;
+  const abstracts = {};
 
-function extractAbstract(xml) {
-  const sections = [];
-  const re = /<AbstractText[^>]*?>([\\s\\S]*?)<\/AbstractText>/g;
-  let m;
-  while ((m = re.exec(xml)) !== null) {
-    const label = m[0].match(/Label="([^"]*)"/);
-    const text = m[1].replace(/<[^>]+>/g, '').trim();
-    if (label && label[1]) {
-      sections.push(`${label[1]}: ${text}`);
-    } else {
-      sections.push(text);
-    }
-  }
-  return sections.join(' ');
-}
+  for (let i = 0; i < pmids.length; i += batchSize) {
+    const batch = pmids.slice(i, i + batchSize);
+    const params = new URLSearchParams({
+      db: 'pubmed',
+      id: batch.join(','),
+      rettype: 'abstract',
+      retmode: 'text'
+    });
 
-function extractPubDate(xml) {
-  const y = extractTag(xml, 'Year') || '';
-  const mo = extractTag(xml, 'Month') || '';
-  const d = extractTag(xml, 'Day') || '';
-  const parts = [y, mo, d].filter(Boolean);
-  return parts.join('-');
-}
-
-function extractAuthors(xml) {
-  const authors = [];
-  const re = /<Author[^>]*?>([\\s\\S]*?)<\/Author>/g;
-  let m;
-  while ((m = re.exec(xml)) !== null) {
-    const last = extractTag(m[1], 'LastName');
-    const fore = extractTag(m[1], 'ForeName');
-    if (last) authors.push(`${last}${fore ? ' ' + fore : ''}`.trim());
-  }
-  return authors.slice(0, 10);
-}
-
-function extractDoi(xml) {
-  const re = /<ArticleId\s+IdType="doi">([^<]+)<\/ArticleId>/;
-  const match = xml.match(re);
-  return match ? match[1] : '';
-}
-
-function extractKeywords(xml) {
-  const kws = [];
-  const re = /<Keyword>([\\s\\S]*?)<\/Keyword>/g;
-  let m;
-  while ((m = re.exec(xml)) !== null) {
-    kws.push(m[1].trim());
-  }
-  return kws;
-}
-
-function parsePubMedXml(xml) {
-  const papers = [];
-  const articleRegex = /<PubmedArticle>([\\s\\S]*?)<\/PubmedArticle>/g;
-  let match;
-
-  while ((match = articleRegex.exec(xml)) !== null) {
-    const article = match[1];
+    console.log(`[PubMed] Fetching abstracts batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(pmids.length / batchSize)}...`);
     try {
-      const pmid = extractTag(article, 'PMID');
-      const title = extractTag(article, 'ArticleTitle');
-      const journal = extractJournal(article);
-      const abstract = extractAbstract(article);
-      const pubDate = extractPubDate(article);
-      const authors = extractAuthors(article);
-      const doi = extractDoi(article);
-      const keywords = extractKeywords(article);
+      const res = await fetch(`${PUBMED_EFETCH}?${params}`, {
+        signal: AbortSignal.timeout(60000)
+      });
+      if (!res.ok) continue;
+      const text = await res.text();
 
-      if (title && abstract && abstract.length > 50) {
-        papers.push({
-          pmid,
-          title,
-          journal,
-          abstract: abstract.substring(0, 2000),
-          date: pubDate,
-          authors,
-          doi,
-          keywords,
-          url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
-          source: 'PubMed'
-        });
+      const blocks = text.split(/\n\nPMID:\s*/);
+      for (const block of blocks) {
+        const pmidMatch = block.match(/^(\d+)/);
+        if (!pmidMatch) continue;
+        const pmid = pmidMatch[1];
+        const lines = block.split('\n');
+        let abstractParts = [];
+        let inAbstract = false;
+
+        for (const line of lines) {
+          if (line.match(/^(BACKGROUND|OBJECTIVE|AIMS|METHODS|RESULTS|CONCLUSION|INTRODUCTION|PURPOSE|DESIGN|SETTING|PARTICIPANTS|MAIN OUTCOME)/i)) {
+            inAbstract = true;
+            abstractParts.push(line.trim());
+          } else if (inAbstract) {
+            if (line.match(/^(PMID|DOI|Keywords|MeSH|Full Text)/i) || line.trim() === '') {
+              if (line.trim() === '') continue;
+              inAbstract = false;
+            } else {
+              abstractParts.push(line.trim());
+            }
+          }
+        }
+
+        if (abstractParts.length === 0) {
+          const absMatch = block.match(/Abstract\s*([\s\S]+?)(?:\n\nPMID|$)/i);
+          if (absMatch) {
+            abstractParts = [absMatch[1].trim().substring(0, 2000)];
+          }
+        }
+
+        if (abstractParts.length > 0) {
+          abstracts[pmid] = abstractParts.join(' ').substring(0, 2000);
+        }
       }
     } catch (e) {
-      console.error(`[PubMed] Parse error: ${e.message}`);
+      console.error(`[PubMed] Abstract fetch error: ${e.message}`);
+    }
+
+    if (i + batchSize < pmids.length) {
+      await new Promise(r => setTimeout(r, 400));
     }
   }
 
+  return abstracts;
+}
+
+async function fetchPubMedDetails(pmids) {
+  if (pmids.length === 0) return [];
+
+  const summaries = await fetchPubMedSummary(pmids);
+  const abstracts = await fetchPubMedAbstracts(pmids);
+
+  const papers = [];
+  for (const pmid of pmids) {
+    const s = summaries[pmid];
+    if (!s) continue;
+
+    const title = (s.title || '').replace(/\.$/, '').trim();
+    const abstract = abstracts[pmid] || '';
+    if (!title) continue;
+
+    papers.push({
+      pmid,
+      title,
+      journal: s.fulljournalname || s.source || '',
+      abstract,
+      date: s.pubdate || '',
+      authors: (s.authors || []).slice(0, 10).map(a => a.name || '').filter(Boolean),
+      doi: (s.elocationid || '').startsWith('doi:') ? s.elocationid.replace('doi:', '').trim() : '',
+      keywords: [],
+      url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+      source: 'PubMed'
+    });
+  }
+
+  console.log(`[PubMed] Parsed ${papers.length} papers with details (${papers.filter(p => p.abstract).length} with abstracts)`);
   return papers;
 }
 
